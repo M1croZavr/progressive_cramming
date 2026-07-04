@@ -438,7 +438,7 @@ def build_tc_pc_rows(tokenizer, args) -> list[dict]:
     ds = _load_pg19_sample(tokenizer, PAIR_INDEX, args.pair_max_seq_len)
     input_ids = ds[0]["input_ids"].tolist()
 
-    print("[tc_pc] total cramming...")
+    print("[tc_pc] full cramming...")
     tc_source, tc_elapsed, _ = run_tc(
         tokenizer, args.model, ds, args.pair_max_seq_len, args.tc_convergence_threshold
     )
@@ -460,7 +460,7 @@ def build_tc_pc_rows(tokenizer, args) -> list[dict]:
     return [
         build_tc_row(
             kind="tc_pc",
-            item={**item, "title": f"{PAIR_TITLE} — total cramming"},
+            item={**item, "title": f"{PAIR_TITLE} — full cramming"},
             source=tc_source, threshold=args.tc_convergence_threshold,
             elapsed_s=tc_elapsed,
             model_ckpt=args.model, max_seq_len=args.pair_max_seq_len,
@@ -497,7 +497,7 @@ def build_smollm_tc_pc_rows(args) -> list[dict]:
     input_ids = ds[0]["input_ids"].tolist()
 
     print(f"[tc_pc smollm] random_seed={args.smollm_seed}")
-    print("[tc_pc smollm] total cramming...")
+    print("[tc_pc smollm] full cramming...")
     tc_source, tc_elapsed, _ = run_tc(
         smollm_tokenizer, args.smollm_model, ds,
         args.smollm_pair_max_seq_len, args.smollm_tc_threshold,
@@ -523,7 +523,7 @@ def build_smollm_tc_pc_rows(args) -> list[dict]:
     return [
         build_tc_row(
             kind="tc_pc",
-            item={**item, "title": f"{PAIR_TITLE}{suffix} — total cramming"},
+            item={**item, "title": f"{PAIR_TITLE}{suffix} — full cramming"},
             source=tc_source, threshold=args.smollm_tc_threshold,
             elapsed_s=tc_elapsed,
             model_ckpt=args.smollm_model, max_seq_len=args.smollm_pair_max_seq_len,
