@@ -318,10 +318,17 @@ def display_gallery(rows, *, model, tokenizer) -> None:
 
 
 def _passage_label(row) -> str:
-    """Strip the trailing ' — total cramming' / ' — progressive cramming' suffix
-    from a tc_pc row's title to get the underlying passage label."""
+    """Strip the trailing method suffix from a tc_pc row's title.
+
+    Accepts both the new ``' — full cramming'`` and the legacy ``' — total cramming'``
+    naming so datasets already published on the Hub keep working after the rename.
+    """
     title = row["title"]
-    for tail in (" — total cramming", " — progressive cramming"):
+    for tail in (
+        " — full cramming",
+        " — total cramming",  # legacy, kept for backward-compat with published rows
+        " — progressive cramming",
+    ):
         if title.endswith(tail):
             return title[: -len(tail)]
     return title
@@ -397,7 +404,7 @@ def display_side_by_side(rows, *, models: dict) -> None:
                 # ~10% extra tokens past the trained span -> visible grey continuation.
                 extra = max(1, tc_row["num_tokens"] // 5)
                 reconstruct_and_show(
-                    tc_row, "Total cramming — whole span at once",
+                    tc_row, "Full cramming — whole span at once",
                     model=m, tokenizer=t, extra_tokens=extra,
                     stream=True,
                 )
@@ -408,7 +415,7 @@ def display_side_by_side(rows, *, models: dict) -> None:
                 )
                 display(HTML(
                     f"<div style='margin-top:4px;font-size:0.9em;color:#888'>"
-                    f"Token Cramming teacher-forced accuracy="
+                    f"Full Cramming teacher-forced accuracy="
                     f"<b>{tc_row['final_convergence']:.3f}</b></div>"
                 ))
 
@@ -700,10 +707,13 @@ class _ProgressiveLiveViz:
         body = "".join(parts)
         header = (
             f"<div style='font-size:0.95em;color:#888;margin-bottom:4px'>"
-            f"Compressed so far: <b style='color:{COLOR_MATCH}'>{current_seq_len}</b>"
-            f" of <b>{n_total}</b> tokens &middot; stage <b>{current_stage}</b>"
-            f" &middot; loss={loss_val:.3f} &middot;"
-            f" reconstruction={conv_val:.3f}</div>"
+            f"<b>Stage:</b> {current_stage}"
+            f" &middot; <b>Compressed</b> "
+            f"<span style='color:{COLOR_MATCH};font-weight:600'>{current_seq_len}</span>"
+            f" out of {n_total} tokens"
+            f" &middot; <b>Accuracy:</b> {conv_val:.3f}"
+            f" &middot; <b>Loss:</b> {loss_val:.3f}"
+            f"</div>"
         )
         block = (
             f"<div style='font-family:monospace;line-height:1.55;white-space:pre-wrap;"
@@ -754,6 +764,60 @@ def _render_landscape_panel(ax, *, XX, YY, cached, coords, threshold):
     ax.set_ylabel("PC2")
     ax.set_title(f"Progressive accuracy reveal (regions where accuracy > {threshold:.2f})")
     ax.set_aspect("equal", adjustable="datalim")
+
+
+def _save_compressed_embedding(result) -> None:
+    """Save the converged progressive-cramming embedding + minimal metadata as
+    a ``.pt`` file in the current working directory, and offer a Colab download
+    button if we're running inside Google Colab.
+
+    The saved dict is intentionally self-contained -- it holds everything needed
+    to reload the embedding and reconstruct with :func:`reconstruct_text`:
+
+    ```python
+    import torch
+    from progressive_cramming.demo import load_frozen_model, reconstruct_text
+    blob = torch.load("compressed_embedding.pt", weights_only=False)
+    model, tokenizer = load_frozen_model(blob["model_checkpoint"], dtype="float16")
+    text = reconstruct_text(model, tokenizer, blob["embedding"], max_new_tokens=blob["horizon"])
+    ```
+    """
+    import os
+    import time
+
+    import torch
+
+    payload = {
+        "embedding": result.embedding.detach().cpu(),
+        "input_ids": list(result.input_ids),
+        "text": result.text,
+        "horizon": int(result.horizon),
+        "num_tokens": int(result.num_tokens),
+        "num_mem_tokens": int(result.num_mem_tokens),
+        "hidden_size": int(result.hidden_size),
+        "model_checkpoint": result.model_checkpoint,
+        "num_stages": len(result.stages),
+        "total_steps": int(result.total_steps),
+        "elapsed_s": float(result.elapsed_s),
+    }
+
+    filename = f"compressed_embedding_{int(time.time())}.pt"
+    path = os.path.abspath(filename)
+    torch.save(payload, path)
+
+    size_kb = os.path.getsize(path) / 1024.0
+    display(HTML(
+        f"<div style='margin-top:6px;font-size:0.9em;color:#888'>"
+        f"💾 Saved compressed embedding to <code>{html.escape(path)}</code> "
+        f"({size_kb:.1f} KB)</div>"
+    ))
+
+    # Best-effort Colab download popup. If we're not in Colab, silently skip.
+    try:
+        from google.colab import files  # type: ignore
+        files.download(path)
+    except Exception:
+        pass
 
 
 def display_paper_style_animation(viz, *, target_frames: int = 60,
@@ -1067,17 +1131,74 @@ def display_interactive_compress(
     if default is None or default not in models:
         default = next(iter(models))
 
-    text_input = widgets.Textarea(
-        # Kafka, Metamorphosis (opening) -- ~115 tokens on the Llama-3.2 tokenizer,
-        # so the default 128-token slider actually has something to work with.
-        value=(
+    # Ready-made examples the user can drop into the textarea in one click.
+    # Each is short (~80-120 tokens on the Llama-3.2 tokenizer) so it fits under
+    # the default 128-token slider without truncation.
+    EXAMPLES = {
+        "Literature": (
             "As Gregor Samsa awoke one morning from uneasy dreams he found himself "
             "transformed in his bed into a gigantic insect. He was lying on his hard, "
             "armour-plated back, and when he lifted his head a little he could see his "
             "dome-like brown belly divided into stiff arched segments, on top of which "
             "the bed quilt could hardly keep in position and was about to slide off completely."
         ),
+        "Poetry": (
+            "I shall be telling this with a sigh\n"
+            "Somewhere ages and ages hence:\n"
+            "Two roads diverged in a wood, and I—\n"
+            "I took the one less traveled by,\n"
+            "And that has made all the difference."
+        ),
+        "Python": (
+            "def sieve(n):\n"
+            "    is_prime = [True] * (n + 1)\n"
+            "    is_prime[0] = is_prime[1] = False\n"
+            "    for i in range(2, int(n ** 0.5) + 1):\n"
+            "        if is_prime[i]:\n"
+            "            for j in range(i * i, n + 1, i):\n"
+            "                is_prime[j] = False\n"
+            "    return [i for i, p in enumerate(is_prime) if p]\n"
+            "\n"
+            "print(sieve(50))\n"
+        ),
+        "Go": (
+            "package main\n"
+            "\n"
+            "import \"fmt\"\n"
+            "\n"
+            "func fib(n int) int {\n"
+            "    if n < 2 {\n"
+            "        return n\n"
+            "    }\n"
+            "    return fib(n-1) + fib(n-2)\n"
+            "}\n"
+            "\n"
+            "func main() {\n"
+            "    for i := 0; i < 10; i++ {\n"
+            "        fmt.Println(fib(i))\n"
+            "    }\n"
+            "}\n"
+        ),
+    }
+
+    text_input = widgets.Textarea(
+        value=EXAMPLES["Literature"],
         layout=widgets.Layout(width="100%", height="120px"),
+    )
+
+    example_buttons = []
+    for name in EXAMPLES:
+        b = widgets.Button(
+            description=name,
+            layout=widgets.Layout(width="auto"),
+            tooltip=f"Load the {name} example",
+        )
+        b.on_click(lambda _b, key=name: setattr(text_input, "value", EXAMPLES[key]))
+        example_buttons.append(b)
+    examples_row = widgets.HBox(
+        [widgets.HTML("<span style='color:#888;font-size:0.9em;margin-right:6px'>Examples:</span>")]
+        + example_buttons,
+        layout=widgets.Layout(margin="0 0 4px 0"),
     )
     model_dd = widgets.Dropdown(options=list(models), value=default, description="Model")
     len_slider = widgets.IntSlider(
@@ -1112,10 +1233,6 @@ def display_interactive_compress(
                 model=m,
                 tokenizer=t,
                 redraw_every=max(5, steps_slider.value // 30),
-                grid_size=20,
-                threshold=0.9,
-                pca_padding=0.6,
-                pca_freeze_after=5,  # unused now -- freeze happens in finalize()
                 region_seq_len_stride=region_stride,
                 first_seq_len=1,
             )
@@ -1130,13 +1247,6 @@ def display_interactive_compress(
                 capture_every=capture,
                 on_step=viz,
             )
-            # Freeze PCA on the FULL trajectory + compute accuracy regions for
-            # every stride-aligned stage, then replay the cursor animation with
-            # progressive-reveal exactly like the paper's animate_trajectory.py
-            # (cache-only, no more forward passes here).
-            print("Computing accuracy landscape on the final PCA plane...")
-            viz.finalize()
-            display_paper_style_animation(viz, target_frames=60, interval_ms=90)
 
             # Build a row-shaped dict so reconstruct_and_show works without an adapter.
             row = {
@@ -1162,10 +1272,15 @@ def display_interactive_compress(
                 f"<b>{len(result.stages)}</b> stages &middot; "
                 f"model: <code>{html.escape(result.model_checkpoint)}</code></div>"
             ))
+
+            # Persist the converged embedding + minimal metadata so the user can
+            # download the compression artefact from Colab (or reload it later).
+            _save_compressed_embedding(result)
             last_result["result"] = result
 
     btn.on_click(on_click)
     display(widgets.VBox([
+        examples_row,
         text_input,
         widgets.HBox([model_dd, len_slider, steps_slider]),
         btn,
