@@ -812,13 +812,6 @@ def _save_compressed_embedding(result) -> None:
         f"({size_kb:.1f} KB)</div>"
     ))
 
-    # Best-effort Colab download popup. If we're not in Colab, silently skip.
-    try:
-        from google.colab import files  # type: ignore
-        files.download(path)
-    except Exception:
-        pass
-
 
 def display_paper_style_animation(viz, *, target_frames: int = 60,
                                   interval_ms: int = 90) -> None:
